@@ -5143,7 +5143,12 @@ def collapse_naive_seqs(swfo, queries=None, split_by_cdr3=False, debug=None):  #
         else:
             return swfo[q]['naive_seq']
 
-    partition = group_seqs_by_value(queries, keyfunc)
+    # JRO: turning off collapsing of sequences with identical inferred naive
+    # seq in order to get forward probability (gen prob) of individual Tcell
+    # receptors; this follows Duncan's advice on the partis Google Group:
+    # https://groups.google.com/g/partis/c/BdDP82OjWrQ/m/MNu9o0FmAgAJ
+    # partition = group_seqs_by_value(queries, keyfunc)
+    partition = [[q] for q in queries]
 
     if debug:
         print '   collapsed %d queries into %d cluster%s with identical naive seqs (%.1f sec)' % (len(queries), len(partition), plural(len(partition)), time.time() - start)
