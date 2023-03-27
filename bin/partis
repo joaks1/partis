@@ -18,6 +18,7 @@ if StrictVersion(scipy.__version__) < StrictVersion('0.17.0'):
 import colored_traceback.always
 import os
 import json
+import operator
 partis_dir = os.path.dirname(os.path.realpath(__file__)).replace('/bin', '')
 if not os.path.exists(partis_dir):
     print 'WARNING current script dir %s doesn\'t exist, so python path may not be correctly set' % partis_dir
@@ -182,6 +183,11 @@ def run_simulation(args):
         glutils.check_allele_prevalence_freqs(args.outfname, glfo, args.allele_prevalence_fname, only_region='v', debug=args.debug>1)
         if args.allele_prevalence_fname == default_prevalence_fname:
             os.remove(default_prevalence_fname)
+    if not args.im_a_subproc and args.allowed_cdr3_lengths is not None:  # check final cdr3 lengths
+        _, alist, _ = utils.read_output(args.outfname)
+        clens = [l['cdr3_length'] for l in alist]
+        clcounts = {l : clens.count(l) for l in set(clens)}
+        print '  final cdr3 lengths: %s (with counts: %s)' % (' '.join(str(l) for l in sorted(set(clens))), ',  '.join('%d %d'%(l, c) for l, c in sorted(clcounts.items(), key=operator.itemgetter(0))))
 
     if working_gldir is not None:
         glutils.remove_glfo_files(working_gldir, args.locus)
@@ -275,7 +281,7 @@ def read_inputs(args, actions):
 
     if len(input_info) > 1000 and args.n_procs == 1:
         print '  note: running on %d sequences with only %d process%s. This may be kinda slow, so it might be a good idea to set --n-procs N to the number of processors on your local machine, or look into non-local parallelization with --batch-system.' % (len(input_info), args.n_procs, utils.plural(args.n_procs, prefix='e'))
-    if len(input_info) > 1000 and args.outfname is None:
+    if len(input_info) > 1000 and args.outfname is None and actions != ['cache-parameters']:
         print '  note: running on a lot of sequences (%d) without setting --outfname. Which is ok, but there will be no persistent record of the results (except the parameter directory).' % len(input_info)
     return input_info, reco_info, glfo, simglfo
 
@@ -534,6 +540,7 @@ def run_all_loci(args, ig_or_tr='ig'):
                         new_clist.append(cstr)
                 clist = new_clist
             utils.remove_from_arglist(clist, '--paired-loci')
+            utils.remove_from_arglist(clist, '--single-light-locus', has_arg=True)
             utils.remove_from_arglist(clist, '--dry-run')
             utils.remove_from_arglist(clist, '--reverse-negative-strands')
             utils.remove_from_arglist(clist, '--paired-indir', has_arg=True)
@@ -563,6 +570,7 @@ def run_all_loci(args, ig_or_tr='ig'):
             if tmpaction == 'generate-trees':
                 utils.remove_from_arglist(clist, '--n-procs', has_arg=True)
                 utils.remove_from_arglist(clist, '--n-sim-events', has_arg=True)
+                utils.remove_from_arglist(clist, '--allowed-cdr3-lengths', has_arg=True)  # format will confuse it
                 clist += ['--generate-trees']
                 utils.replace_in_arglist(clist, '--outfname', getofn(ltmp, trees=True, lpair=lpair))
                 work_fnames.append(getofn(ltmp, trees=True, lpair=lpair))
@@ -578,6 +586,11 @@ def run_all_loci(args, ig_or_tr='ig'):
                     if args.only_genes is not None:
                         utils.replace_in_arglist(clist, '--only-genes', ':'.join([g for g in args.only_genes if utils.get_locus(g)==ltmp]))
                     utils.replace_in_arglist(clist, '--n-sim-events', str(get_n_events(lpair[1], args.n_sim_events)), insert_after='--choose-trees-in-order')
+                    if args.allowed_cdr3_lengths is not None:
+                        if ltmp in args.allowed_cdr3_lengths:
+                            utils.replace_in_arglist(clist, '--allowed-cdr3-lengths', ':'.join(args.allowed_cdr3_lengths[ltmp].split('c')))  # ick, i hate adding some new split rule with 'c' here (but not sure what else to do)
+                        else:
+                            utils.remove_from_arglist(clist, '--allowed-cdr3-lengths', has_arg=True)
                 else:
                     if auto_cache:
                         clist[clist.index(args.action)] = 'cache-parameters'
@@ -1127,7 +1140,7 @@ def run_all_loci(args, ig_or_tr='ig'):
         else:
             lp_infos = paircluster.read_lpair_output_files(spairs(), getofn, dont_add_implicit_info=not args.debug_paired_clustering, read_selection_metrics=smetrics and len(args.existing_output_run_cfg) > 0, dbgstr='partition', debug=args.debug or args.debug_paired_clustering)
             _ = read_qti_file(args)  # sets <args.queries_to_include>
-            antn_pairs = paircluster.find_all_cluster_pairs(lp_infos, min_cluster_size=args.min_selection_metric_cluster_size if smetrics else None)  # , required_keys=['tree-info']
+            antn_pairs = paircluster.find_all_cluster_pairs(lp_infos, min_cluster_size=args.min_non_clonal_cluster_size if smetrics else None)  # , required_keys=['tree-info']
         antn_pairs = sorted(antn_pairs, key=lambda x: sum(len(l['unique_ids']) for l in x), reverse=True)  # sort by the sum of h+l ids (if i could start over i might sort by the number of common ids)
         fake_pntns, mpfo_lists, mtpys = paircluster.make_fake_hl_pair_antns(args, antn_pairs)
         return antn_pairs, fake_pntns, mpfo_lists, mtpys
@@ -1348,6 +1361,7 @@ parent_args.append({'name' : '--meta-info-to-emphasize', 'kwargs' : {'help' : 'I
 parent_args.append({'name' : '--meta-info-key-to-color', 'kwargs' : {'help' : 'Like --meta-info-to-emphasize, except for this key we choose a different color for each value (only in the slug/joy plots at the moment).'}})
 parent_args.append({'name' : '--meta-emph-formats', 'kwargs' : {'help' : 'Formatting instructions for keys used in --meta-info-to-emphasize and --meta-info-key-to-color, specified as a colon-separated list of comma-separated key/val pairs. Currently you can do two things: specify a different (presumably prettier) name, and specify to emphasize/color based on length rather than value. For instance \'--meta-info-key-to-color multiplicities --meta-info-to-emphasize paired-uids,1 --meta-emph-formats multiplicities,multi:paired-uids,len\' will color by multiplicities, but label this in the plots with \'multi\', and emphasize seqs with exactly one paired uid (i.e. their \'paired-uids\' list is length 1).'}})
 parent_args.append({'name' : '--existing-output-run-cfg', 'kwargs' : {'help' : 'colon-separated list specifying the results on which to run get-selection-metrics and plot-partitions. \'single\': single chain results, \'paired\': paired results in e.g. h+k/ subdirs, \'merged\': merged igh results (plus link to h+k/ light results).'}})
+parent_args.append({'name' : '--cluster-size-bins', 'kwargs' : {'help' : 'colon-separated list of bin low edges for cluster size plots when partition plotting'}})
 
 parent_args.append({'name' : '--default-initial-germline-dir', 'kwargs' : {'default' : partis_dir + '/data/germlines', 'help' : 'For internal use only (used to pass around the default location). To specify your own germline directory from which to start, use --initial-germline-dir instead.'}})
 parent_args.append({'name' : '--initial-germline-dir', 'kwargs' : {'help' : 'Directory from which to read initial germline info (either from which to begin inference, or with which to simulate). For inference, it is only actually read when caching parameters, while subsequent steps read the inferred germline set from --parameter-dir. NOTE default is set below, because control flow is too complicated for argparse. See also --simulation-germline-dir.'}})
@@ -1374,8 +1388,9 @@ parent_args.append({'name' : '--min-allele-finding-gene-length', 'kwargs' : {'ty
 parent_args.append({'name' : '--plot-and-fit-absolutely-everything', 'kwargs' : {'type' : int, 'help' : 'fit every single position for this <istart> and write every single corresponding plot (slow as hell, and only for debugging/making plots for paper)'}})
 parent_args.append({'name' : '--get-selection-metrics', 'kwargs' : {'action' : 'store_true', 'help' : 'calculate tree-based selection metrics for each cluster (can also be run on existing output with \'get-selection-metrics\' action). By default it calculates fast, but very approximate, trees (see manual for details), but you can give it more accurate trees by setting --treefname, or alternatively run gctree with --run-gctree (unrelated to --input-simulation-treefname).'}})
 parent_args.append({'name' : '--min-selection-metric-cluster-size', 'kwargs' : {'type' : int, 'default' : treeutils.default_min_selection_metric_cluster_size, 'help' : 'don\'t calculate selection metrics for clusters smaller than this'}})
+parent_args.append({'name' : '--min-non-clonal-cluster-size', 'kwargs' : {'type' : int, 'default' : treeutils.default_min_selection_metric_cluster_size, 'help' : 'don\'t look for similar-but-non-clonal families (when combining selection metrics) that are smaller than this'}})
 parent_args.append({'name' : '--treefname', 'kwargs' : {'help' : 'newick-formatted file with a tree corresponding to the sequences either in --infname (if making new output, i.e. action is annotate or partition) or --outfname (if reading existing output, i.e. action is get-selection-metrics) (unrelated to --input-simulation-treefname).'}})
-parent_args.append({'name' : '--tree-inference-method', 'kwargs' : {'choices' : ['fasttree', 'iqtree', 'gctree', 'linearham'], 'help' : 'Tree inference method to run when getting selection metrics (if not set, uses fasttree [combined, if available, with the cluster path])'}})
+parent_args.append({'name' : '--tree-inference-method', 'kwargs' : {'choices' : ['fasttree', 'iqtree', 'gctree', 'linearham', 'cpath'], 'help' : 'Tree inference method to run when getting selection metrics (if not set, uses fasttree [combined, if available, with the cluster path])'}})
 parent_args.append({'name' : '--selection-metrics-to-calculate', 'kwargs' : {'default' : 'lbi:lbr:aa-lbi:aa-lbr:cons-dist-aa', 'help' : 'colon-separated list of selection metrics to calculate.'}})
 parent_args.append({'name' : '--selection-metric-plot-cfg', 'kwargs' : {'default' : ':'.join(treeutils.default_plot_cfg), 'help' : 'colon-separated list of plot types to make for selection metrics (see treeutils.plot_tree_metrics()). Choices: %s.' % ' '.join(treeutils.all_plot_cfg)}})
 parent_args.append({'name' : '--extra-daffy-metrics', 'kwargs' : {'help' : 'colon-separated list of extra metrics (beyond defaults of %s) for which to make delta-affinity performance plots'%':'.join(treeutils.daffy_metrics)}})
@@ -1471,7 +1486,7 @@ subargs['simulate'].append({'name' : '--n-leaf-hist-fname', 'kwargs' : {'help' :
 subargs['simulate'].append({'name' : '--default-scratch-n-leaf-distribution', 'kwargs' : {'default' : 'geometric', 'choices' : ['geometric', 'box', 'zipf'], 'help' : 'Default for --n-leaf-distribution. Do not set, this is for internal use only.'}})
 subargs['simulate'].append({'name' : '--n-leaves', 'kwargs' : {'type' : float, 'default' : 5., 'help' : 'Parameter determining the shape of the distribution from which the number of leaves per tree is drawn (--n-leaf-distribution). For \'geometric\' and \'box\', this is the mean; while for \'zipf\' it is the exponent, i.e. *not* the mean -- see docs for numpy.random.zipf for details. Has *no* effect if --n-leaf-distribution is \'hist\'.'}})
 subargs['simulate'].append({'name' : '--constant-number-of-leaves', 'kwargs' : {'action' : 'store_true', 'help' : 'Give all trees the same number of leaves (i.e. override --n-leaf-distribution).'}})
-subargs['simulate'].append({'name' : '--allowed-cdr3-lengths', 'kwargs' : {'help' : 'Colon-separated list of cdr3 lengths to which to restrict the simulation. NOTE that our cdr3 definition includes both conserved codons, which differs from the imgt definition (sorry).'}})
+subargs['simulate'].append({'name' : '--allowed-cdr3-lengths', 'kwargs' : {'help' : 'For single chain simulation, a colon-separated list of nucleotide cdr3 lengths to which to restrict the simulation (ranges also allowed, e.g. 36-40 [python slice conventions]). NOTE that our cdr3 definition includes both conserved codons, which differs from the imgt definition (sorry). If --paired-loci is set, specify different lengths for each loci as key/val pairs e.g. \'igh,39c42-46:igk,30c33c36\' (each \'c\' will be replaced by a colon when passing to each locus\'s simulation process). If a locus is not present in the dict, no restrictions will be placed on its lengths. Typical human lengths: igh (36-72), igk (30-39), igl (30-42).'}})
 subargs['simulate'].append({'name' : '--remove-nonfunctional-seqs', 'kwargs' : {'action' : 'store_true', 'help' : 'Remove non-functional sequences from simulated rearrangement events. Note that because this happens after generating SHM (since we have no way to tell bppseqgen to only generate functional sequences), you will in general need to specify a (potentialy much) larger value for --n-leaves if you set --remove-nonfunctional-seqs. Typically, the vast majority of nonfunctional simulated sequences are due to stop codons generated by SHM.'}})
 subargs['simulate'].append({'name' : '--gtrfname', 'kwargs' : {'default' : partis_dir + '/data/recombinator/gtr.txt', 'help' : 'File with list of GTR parameters. Fed into bppseqgen along with the chosen tree. Corresponds to an arbitrary dataset at the moment, but eventually will be inferred per-dataset.'}})  # NOTE command to generate gtr parameter file: [stoat] partis/ > zcat /shared/silo_researcher/Matsen_F/MatsenGrp/data/bcr/output_sw/A/04-A-M_gtr_tr-qi-gi.json.gz | jq .independentParameters | grep -v '[{}]' | sed 's/["\:,]//g' | sed 's/^[ ][ ]*//' | sed 's/ /,/' | sort >data/gtr.txt)
 subargs['simulate'].append({'name' : '--root-mrca-weibull-parameter', 'kwargs' : {'type' : float, 'help' : 'if set, uses TreeSimGM (instead of TreeSim), and passes this value as the weibull parameter (e.g. 0.1: long root-mrca distance, lots of shared mutation; 5: short, little) NOTE requires installation of TreeSimGM'}})

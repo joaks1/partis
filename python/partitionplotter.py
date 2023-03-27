@@ -31,7 +31,7 @@ class PartitionPlotter(object):
         self.n_max_mutations = 65
         self.n_joyplots_in_html = {'shm-vs-size' : self.n_max_joy_plots, 'overview' : 2}  # the rest of them are still in the dir, they're just not displayed in the html (note this is just
         self.min_high_mutation_cluster_size = 1
-        self.n_biggest_to_plot = 24  # this functions as the number of plots for mds, sfs, and laplacian spectra NOTE this is overridden by self.args.queries_to_include (i.e. those queries always get plotted), but *not* by self.args.meta_info_to_emphasize
+        self.n_biggest_to_plot = 25  # this functions as the number of plots for trees, mds, sfs, and laplacian spectra NOTE this is overridden by self.args.queries_to_include (i.e. those queries always get plotted), but *not* by self.args.meta_info_to_emphasize
         self.n_plots_per_row = 4
 
         self.size_vs_shm_min_cluster_size = 3  # don't plot singletons and pairs for really big repertoires
@@ -247,7 +247,7 @@ class PartitionPlotter(object):
         return rfnames
 
     # ----------------------------------------------------------------------------------------
-    def make_cluster_bubble_plots(self, alpha=0.4, n_to_write_size=10, debug=False):
+    def make_cluster_bubble_plots(self, alpha=0.6, n_to_write_size=9999999, debug=False):
         import matplotlib.pyplot as plt
         subd, plotdir = self.init_subd('cluster-bubble')
         mekey = self.args.meta_info_key_to_color
@@ -286,13 +286,14 @@ class PartitionPlotter(object):
         nbub = len(bubfos)
         if len(fake_cluster) > 0:
             nbub -= 1
-        title = 'bubbles for %d/%d clusters (%d/%d seqs)' % (nbub, len(self.sclusts), total_bubble_seqs, repertoire_size)
         xtra_text = None
         if len(fake_cluster) > 0:
-            xtra_text = {'x' : 0.2, 'y' : 0.85, 'color' : 'green', 'text' : 'small clusters: %d seqs in %d clusters smaller than %d' % (len(fake_cluster), len(self.sclusts) - len(bubfos), len(self.sclusts[self.n_max_bubbles - 1]))}
-        fn = self.plotting.bubble_plot('bubbles', plotdir, bubfos, title=title, xtra_text=xtra_text, alpha=alpha)
+            xtra_text = {'x' : 0.3, 'y' : 0.85, 'color' : 'green', 'text' : '%d seqs in %d clusters with size %d or smaller' % (len(fake_cluster), len(self.sclusts) - nbub, len(self.sclusts[self.n_max_bubbles - 1]))}
+        fn = self.plotting.bubble_plot('bubbles', plotdir, [b for b in bubfos if b['id']!='fake'], title='bubbles for %d largest clusters (%d/%d seqs)'%(nbub, total_bubble_seqs, repertoire_size), alpha=alpha)
+        fn2 = self.plotting.bubble_plot('small-bubbles', plotdir, [b for b in bubfos if b['id']=='fake'], title='single bubble for %d smaller clusters'%(len(self.sclusts) - self.n_max_bubbles), xtra_text=xtra_text, alpha=alpha)
         fnames = [[]]
         self.addfname(fnames, fn)
+        self.addfname(fnames, fn2)
         if mekey is not None:
             lfn = self.plotting.make_meta_info_legend(plotdir, 'cluster-bubbles', mekey, emph_colors, all_emph_vals, meta_emph_formats=self.args.meta_emph_formats, alpha=alpha)
             self.addfname(fnames, lfn)
@@ -507,7 +508,10 @@ class PartitionPlotter(object):
         if self.treefos is not None:
             return
         antn_list = [self.antn_dict.get(':'.join(c)) for c in self.sclusts]  # NOTE we *need* cluster indices here to match those in all the for loops in this file
+        cibak = self.args.cluster_indices  # ick
+        self.args.cluster_indices = [i for i in range(len(self.sclusts)) if self.plot_this_cluster(i, plottype='trees')]
         self.treefos = treeutils.get_treefos(self.args, antn_list, cpath=self.cpath, glfo=self.glfo)
+        self.args.cluster_indices = cibak
         if self.args.tree_inference_method is not None:  # if the inference method infers ancestors, those sequences get added to the annotation during inference (e.g gctree, iqtree, linearham), but here we have to update the antn_dict keys and sclusts for these new seqs
             self.antn_dict = utils.get_annotation_dict(antn_list)
             for iclust, clust in enumerate(self.sclusts):  # NOTE can't just sort the 'unique_ids', since we need the indices to match up with the other plots here
@@ -620,18 +624,8 @@ class PartitionPlotter(object):
 
     # ----------------------------------------------------------------------------------------
     def make_cluster_size_distribution(self):
-        subd, plotdir = self.init_subd('sizes')
-        fname = 'cluster-sizes'
-        hcolors = None
-        cslist = [len(c) for c in self.sclusts]
-        # is_log_x = len(cslist) > 100 # and len([s for s in cslist if s>50]) > 30
-        csize_hists = {'best' : hutils.make_hist_from_list_of_values(cslist, 'int', fname, is_log_x=True)}  # seems kind of wasteful to make a bin for every integer (as here), but it's not going to be *that* many, and we want to be able to sample from them, and it's always a hassle getting the bins you want UPDATE ok now sometimes using log bins, for aesthetic plotting reasons, but maybe also ok for sampling?
-        self.plotting.plot_cluster_size_hists(plotdir, fname, csize_hists)
-        csize_hists['best'].write('%s/%s.csv' % (plotdir, fname))
-        fnlist = [subd + '/' + fname + '.svg']
-        ytitle = None
-        if self.args.meta_info_key_to_color is not None:  # plot mean fraction of cluster that's X for each cluster size
-            fname = 'cluster-size-fractions'
+        # ----------------------------------------------------------------------------------------
+        def plot_me_color_hists():  # plot mean fraction of cluster that's X for each cluster size
             mekey = self.args.meta_info_key_to_color
             all_emph_vals, emph_colors = self.plotting.meta_emph_init(mekey, clusters=self.sclusts, antn_dict=self.antn_dict, formats=self.args.meta_emph_formats)
             hcolors = {v : c for v, c in emph_colors}
@@ -643,26 +637,40 @@ class PartitionPlotter(object):
                         continue
                     emph_fracs = utils.get_meta_emph_fractions(mekey, all_emph_vals, tclust, antn, formats=self.args.meta_emph_formats)
                     for v, frac in emph_fracs.items():
-                        plotvals[v].append((csize, frac))
-            bhist = csize_hists['best']
-            csize_hists.update({v : Hist(template_hist=bhist) for v in all_emph_vals})  # for each possible value, a list of (cluster size, fraction of seqs in cluster with that val) for clusters that contain seqs with that value
+                        plotvals[v].append((csize, frac, frac * len(tclust)))
+            csize_hists.update({v : Hist(template_hist=csize_hists['best']) for v in all_emph_vals})  # for each possible value, a list of (cluster size, fraction of seqs in cluster with that val) for clusters that contain seqs with that value
             del csize_hists['best']
+            ctot_hists = copy.deepcopy(csize_hists)
             for e_val, cvals in plotvals.items():
                 ehist = csize_hists[e_val] #utils.meta_emph_str(mekey, e_val, formats=self.args.meta_emph_formats)]
                 for ibin in ehist.ibiniter(include_overflows=True):
-                    ib_vals = [f for s, f in cvals if ehist.find_bin(s)==ibin]  # fracs whose cluster sizes fall in this bin (should all be quite similar in size if our bins are sensible, so shouldn't need to do an average weighted for cluster size)
+                    ib_vals = [(f, c) for s, f, c in cvals if ehist.find_bin(s)==ibin]  # fracs (+total seqs) whose cluster sizes fall in this bin (should all be quite similar in size if our bins are sensible, so shouldn't need to do an average weighted for cluster size)
                     if len(ib_vals) == 0:
                         continue
-                    mval = numpy.mean(ib_vals)
-                    err = mval / math.sqrt(2) if len(ib_vals) == 1 else numpy.std(ib_vals, ddof=1) / math.sqrt(len(ib_vals))  # that isn't really right for len 1, but whatever
+                    ib_fracs, ib_counts = zip(*ib_vals)
+                    mval = numpy.mean(ib_fracs)
+                    err = mval / math.sqrt(2) if len(ib_fracs) == 1 else numpy.std(ib_fracs, ddof=1) / math.sqrt(len(ib_fracs))  # that isn't really right for len 1, but whatever
                     ehist.set_ibin(ibin, mval, err)
+                    ctot_hists[e_val].set_ibin(ibin, sum(ib_counts), math.sqrt(mval))
             ytitle = 'mean fraction of each cluster'
-
-        self.plotting.plot_cluster_size_hists(plotdir, fname, csize_hists, hcolors=hcolors, ytitle=ytitle)
-        for hname, thist in csize_hists.items():
-            thist.write('%s/%s%s.csv' % (plotdir, fname, '' if hname=='best' else '-'+hname))
-        fnlist.append(subd + '/' + fname + '.svg')
-        return [fnlist]
+            bfn = 'cluster-size-fractions'
+            for hname, thist in csize_hists.items():
+                thist.write('%s/%s%s.csv' % (plotdir, bfn, '' if hname=='best' else '-'+hname))
+            self.plotting.plot_cluster_size_hists(plotdir, bfn, csize_hists, hcolors=hcolors, ytitle=ytitle, log='x', no_legend=True)
+            self.plotting.plot_cluster_size_hists(plotdir, bfn+'-tot', ctot_hists, hcolors=hcolors, ytitle='total N seqs', log='', stacked_bars=True, no_legend=True)
+            lfn = self.plotting.make_meta_info_legend(plotdir, bfn, self.args.meta_info_key_to_color, emph_colors, all_emph_vals, meta_emph_formats=self.args.meta_emph_formats, alpha=0.6)
+            fnlist.extend([lfn, bfn, bfn+'-tot'])
+        # ----------------------------------------------------------------------------------------
+        subd, plotdir = self.init_subd('sizes')
+        cslist = [len(c) for c in self.sclusts]
+        csize_hists = {'best' : self.plotting.make_csize_hist(self.sclusts, xbins=self.args.cluster_size_bins)}
+        bfn = 'cluster-sizes'
+        csize_hists['best'].write('%s/%s.csv' % (plotdir, bfn))
+        self.plotting.plot_cluster_size_hists(plotdir, bfn, csize_hists)
+        fnlist = [bfn]
+        if self.args.meta_info_key_to_color is not None:
+            plot_me_color_hists()
+        return [['%s/%s.svg' % (subd, f) for f in fnlist]]
 
     # ----------------------------------------------------------------------------------------
     def make_tree_plots(self):
@@ -732,9 +740,10 @@ class PartitionPlotter(object):
                                              label_all_nodes=self.args.label_tree_nodes, label_root_node=self.args.label_root_node, node_size_key=self.args.node_size_key, node_label_regex=self.args.node_label_regex)
             cmdfos.append(cfo)
             self.addfname(fnames, plotname)
-            self.addfname(fnames, '%s-legend'%plotname)
+            if self.args.meta_info_key_to_color is not None:
+                self.addfname(fnames, '%s-legend'%plotname)
 
-            # cdr3 plosition info plots
+            # cdr3 position info plots
             if annotation.get('is_fake_paired', False):
                 self.plotting.plot_legend_only(collections.OrderedDict([('%s %s'%(c, cfo), {'color' : 'blue' if c=='h' else 'green'}) for c, cfo in cdr3fo.items()]), plotdir, '%s-cdr3'%plotname, title='CDR3')
                 self.addfname(fnames, '%s-cdr3'%plotname)
