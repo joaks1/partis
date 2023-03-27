@@ -275,6 +275,8 @@ def get_scanvar_arg_lists(args):
     # ----------------------------------------------------------------------------------------
     def set_arg_list(aname):  # NOTE we *don't* want to set intify or floatify here since the dir structure stuff is too hard if we don't have strings; conversions happen only for plotting axes
         attr_name = aname.replace('-', '_') + '_list'
+        if not hasattr(args, attr_name):
+            raise Exception('args does not have attribute \'%s\', i.e. you probably need to add an arg called --%s-list' % (attr_name, aname))
         arglist = get_arg_list(getattr(args, attr_name), list_of_lists=aname in args.str_list_vars, #, intify=aname in args.svartypes['int'], floatify=aname in args.svartypes['float'],
                                forbid_duplicates=args.zip_vars is None or aname not in args.zip_vars)
         setattr(args, attr_name, arglist)  # if we're zipping the var, we have to allow duplicates, but then check for them again after we've done combos in get_var_info()
@@ -309,7 +311,14 @@ def vlval(args, vlists, varnames, vname):  # ok this name also sucks, but they'r
 def get_var_info(args, scan_vars, debug=False):
     # ----------------------------------------------------------------------------------------
     def handle_var(svar, val_lists, valstrs):
-        convert_fcn = (lambda vlist: ':'.join(str(v) for v in vlist)) if svar in args.str_list_vars else str
+        # convert_fcn = (lambda vlist: ':'.join(str(v) for v in vlist)) if svar in args.str_list_vars else str  # old version, leaving here cause i'm chicken that i messed something up
+        convert_fcn = str
+        if svar in args.str_list_vars:
+            def convert_fcn(vlist):
+                subfcn = str
+                if hasattr(args, 'recurse_replace_vars') and svar in args.recurse_replace_vars:
+                    subfcn = lambda s: s.replace('M', ',').replace('L', ':')  # if you need , or : in subprocess args, put in M and L and they'll get replaced here
+                return ':'.join(subfcn(v) for v in vlist)
         sargv = sargval(args, svar)
         if sargv is None:  # no default value, and it wasn't set on the command line
             pass
@@ -330,7 +339,7 @@ def get_var_info(args, scan_vars, debug=False):
     if debug:
         print '                             name    list   val_lists              valstrs'
     for svar in scan_vars:
-        val_lists, valstrs = handle_var(svar, val_lists, valstrs)
+        val_lists, valstrs = handle_var(svar, val_lists, valstrs)  # val_lists and valstrs get updated each time through
 
     if args.zip_vars is not None:
         assert len(args.zip_vars) == 2  # nothing wrong with more, but I don't feel like testing it right now
@@ -355,7 +364,7 @@ def get_var_info(args, scan_vars, debug=False):
     return base_args, varnames, val_lists, valstrs
 
 # ----------------------------------------------------------------------------------------
-def run_scan_cmds(args, cmdfos, logfname, n_total, n_already_there, single_ofn, example_existing_ofn=None, dbstr=None):
+def run_scan_cmds(args, cmdfos, logfname, n_total, n_already_there, single_ofn, example_existing_ofn=None, shell=False, dbstr=None):
     if n_already_there > 0:
         print '      %d / %d %sjobs skipped (outputs exist, e.g. %s)' % (n_already_there, n_total, '' if dbstr is None else dbstr+' ', single_ofn if single_ofn is not None else example_existing_ofn)
     if len(cmdfos) > 0:
@@ -363,7 +372,7 @@ def run_scan_cmds(args, cmdfos, logfname, n_total, n_already_there, single_ofn, 
         if args.dry:
             print '  first command: %s' % cmdfos[0]['cmd_str']
         else:
-            run_cmds(cmdfos, debug='write:%s'%logfname, n_max_procs=args.n_max_procs, allow_failure=True)
+            run_cmds(cmdfos, debug='write:%s'%logfname, n_max_procs=args.n_max_procs, allow_failure=True, shell=shell)
 
 # ----------------------------------------------------------------------------------------
 def add_lists(list_a, list_b):  # add two lists together, except if one is None treat it as if it was zero length (allows to maintain the convention that command line arg variables are None if unset, while still keeping things succinct)
@@ -623,7 +632,7 @@ linekeys['per_family'] = ['naive_seq', 'cdr3_length', 'codon_positions', 'length
                          [r + '_per_gene_support' for r in regions]
 # NOTE some of the indel keys are just for writing to files, whereas 'indelfos' is for in-memory
 # note that, as a list of gene matches, all_matches would in principle be per-family, except that it's sw-specific, and sw is all single-sequence (this is also true of fv/jf insertions)
-linekeys['per_seq'] = ['seqs', 'unique_ids', 'mut_freqs', 'n_mutations', 'shm_aa', 'input_seqs', 'indel_reversed_seqs', 'cdr3_seqs', 'full_coding_input_seqs', 'padlefts', 'padrights', 'indelfos', 'duplicates',
+linekeys['per_seq'] = ['seqs', 'unique_ids', 'mut_freqs', 'n_mutations', 'shm_aa', 'input_seqs', 'indel_reversed_seqs', 'cdr3_seqs', 'cdr3_seqs_aa', 'full_coding_input_seqs', 'padlefts', 'padrights', 'indelfos', 'duplicates',
                        'leader_seqs', 'c_gene_seqs',  'leaders', 'c_genes', # these are kind of replacing fv/jf insertions, and the latter probably should just be removed, since they're really more per-seq things, but i don't know if it'd really work, and it'd for sure be hard, so whatever (otoh, maybe fv/jf insertions are necessary for padding to same length in sw? not sure atm)
                        'has_shm_indels', 'qr_gap_seqs', 'gl_gap_seqs', 'loci', 'paired-uids', 'all_matches', 'seqs_aa', 'input_seqs_aa', 'cons_dists_nuc', 'cons_dists_aa', 'lambdas', 'nearest_target_indices', 'min_target_distances'] + \
                       [r + '_qr_seqs' for r in regions] + \
@@ -649,6 +658,7 @@ extra_annotation_headers = [  # you can specify additional columns (that you wan
     'consensus_seq_aa',
     'naive_seq_aa',
     'seqs_aa',
+    'cdr3_seqs_aa',
     'cons_dists_nuc',
     'cons_dists_aa',
 ] + list(implicit_linekeys)  # NOTE some of the ones in <implicit_linekeys> are already in <annotation_headers>
@@ -1061,18 +1071,22 @@ def per_seq_val(line, key, uid, use_default=False, default_val=None):  # get val
     return line[key][line['unique_ids'].index(uid)]  # NOTE just returns the first one, idgaf if there's more than one (and maybe I won't regret that...)
 
 # ----------------------------------------------------------------------------------------
-def antnval(antn, key, iseq, use_default=False, default_val=None):  # generalizes per_seq_val(), and maybe they should be integrated? but adding this long afterwards so don't want to mess with that fcn
+def antnval(antn, key, iseq, use_default=False, default_val=None, add_xtr_col=False):  # generalizes per_seq_val(), and maybe they should be integrated? but adding this long afterwards so don't want to mess with that fcn
+    # ----------------------------------------------------------------------------------------
+    def rtnval():
+        # assert key in linekeys['per_seq']  # input metafile keys (e.g. chosens) are no longer always added to per_seq keys
+        if key in linekeys['per_family']:
+            return antn[key]
+        else:
+            return antn[key][iseq]
+    # ----------------------------------------------------------------------------------------
     # NOTE this is starting to duplicate code in add_extra_column()
     if key == 'aa-cdist':
         key = 'cons-dist-aa'  # arggggggh (when we write output info when choosing abs, we write it as 'aa-cdist', and can't change it now)
     if key == 'aa-cfrac':
         key = 'cons-frac-aa'  # arggggggh (when we write output info when choosing abs, we write it as 'aa-cfrac', and can't change it now)
     if key in antn:
-        # assert key in linekeys['per_seq']  # input metafile keys (e.g. chosens) are no longer always added to per_seq keys
-        if key in linekeys['per_family']:
-            return antn[key]
-        else:
-            return antn[key][iseq]
+        return rtnval()
     elif 'tree-info' in antn and key in antn['tree-info']['lb']:
         return treeutils.smvals(antn, key, iseq=iseq)
     elif key in ['cons-frac-aa', 'cons-dist-aa']:  # NOTE this doesn't check to see if it's there (i think because we don't store it), it just calculates it
@@ -1093,7 +1107,13 @@ def antnval(antn, key, iseq, use_default=False, default_val=None):  # generalize
     elif key == 'imgt_cdr3_length_aa':  # ick
         return antn['cdr3_length'] / 3 - 2
     else:
-        if use_default:
+        if add_xtr_col:
+            rval = add_extra_column(key, antn, None)  # try to add it NOTE this fcn even existing is pretty hackey, it was originally for transferring from info to outfo 
+            if rval is not None:
+                antn[key] = rval
+        if key in antn:
+            return rtnval()
+        elif use_default:
             return default_val
         else:
             raise Exception('key \'%s\' not found in line' % key)
@@ -2014,7 +2034,7 @@ def color_chars(chars, col, seq):
 
 # ----------------------------------------------------------------------------------------
 # returns a multiple sequence alignemnt from mafft (see run_blastn() below to align against a db of targets)
-def align_many_seqs(seqfos, outfname=None, existing_aligned_seqfos=None, ignore_extra_ids=False, aa=False, extra_str='', debug=False):  # if <outfname> is specified, we just tell mafft to write to <outfname> and then return None
+def align_many_seqs(seqfos, outfname=None, existing_aligned_seqfos=None, ignore_extra_ids=False, aa=False, no_gaps=False, extra_str='', debug=False):  # if <outfname> is specified, we just tell mafft to write to <outfname> and then return None
     def outfile_fcn():
         if outfname is None:
             return tempfile.NamedTemporaryFile()
@@ -2027,9 +2047,12 @@ def align_many_seqs(seqfos, outfname=None, existing_aligned_seqfos=None, ignore_
         for seqfo in seqfos:
             fin.write('>%s\n%s\n' % (seqfo['name'], seqfo['seq']))
         fin.flush()
+        cmd = 'mafft'
+        if no_gaps:
+            cmd += ' --op 10'
         if existing_aligned_seqfos is None:  # default: align all the sequences in <seqfos>
             # subprocess.check_call('mafft --quiet %s >%s' % (fin.name, fout.name), shell=True)
-            outstr, errstr = simplerun('mafft --quiet %s >%s' % (fin.name, fout.name), shell=True, return_out_err=True, debug=False)
+            outstr, errstr = simplerun('%s --quiet %s >%s' % (cmd, fin.name, fout.name), shell=True, return_out_err=True, debug=False)
         else:  # if <existing_aligned_seqfos> is set, we instead add the sequences in <seqfos> to the alignment in <existing_aligned_seqfos>
             with tempfile.NamedTemporaryFile() as existing_alignment_file:  # NOTE duplicates code in glutils.get_new_alignments()
                 biggest_length = max(len(sfo['seq']) for sfo in existing_aligned_seqfos)
@@ -2038,7 +2061,7 @@ def align_many_seqs(seqfos, outfname=None, existing_aligned_seqfos=None, ignore_
                     existing_alignment_file.write('>%s\n%s\n' % (sfo['name'], sfo['seq'].replace('.', '-') + dashstr))
                 existing_alignment_file.flush()
                 # subprocess.check_call('mafft --keeplength --add %s %s >%s' % (fin.name, existing_alignment_file.name, fout.name), shell=True)  #  --reorder
-                outstr, errstr = simplerun('mafft --keeplength --add %s %s >%s' % (fin.name, existing_alignment_file.name, fout.name), shell=True, return_out_err=True, debug=False)  #  --reorder
+                outstr, errstr = simplerun('%s --keeplength --add %s %s >%s' % (cmd, fin.name, existing_alignment_file.name, fout.name), shell=True, return_out_err=True, debug=False)  #  --reorder
 
         if outfname is not None:
             if debug:
@@ -2084,46 +2107,76 @@ def align_seqs(ref_seq, seq):  # should eventually change name to align_two_seqs
 
 # ----------------------------------------------------------------------------------------
 # darn it, maybe there was no reason to add this? I forgot that run_vsearch() seems to do basically the same thing? (although it would have needed some coding to use an arbitrary database)
-def run_blastn(queryfos, targetfos, baseworkdir, short=False, debug=True):  # if short isn't set, it seems to ignore matches less than like 10 bases
+def run_blastn(queryfos, targetfos, baseworkdir, diamond=False, short=False, aa=False, print_all_matches=False, debug=True):  # if short isn't set, it seems to ignore matches less than like 10 bases
     wkdir = '%s/blastn' % baseworkdir
     tgn = 'targets'
     tgfn, qrfn, ofn = [('%s/%s'%(wkdir, fstr)) for fstr in ['%s.fa'%tgn, 'queries.fa', 'results.out']]
     prep_dir(wkdir)
     write_fasta(tgfn, targetfos)
     write_fasta(qrfn, queryfos)
-    if debug > 1:
+    qdict, tdict = [{s['name'] : s['seq'] for s in sfos} for sfos in [queryfos, targetfos]]  # should really check for duplicates
+    if debug:
         print '    running blast on %s sequences with %d targets' % (len(queryfos), len(targetfos))
-    _ = simplerun('makeblastdb -in %s -out %s/%s -dbtype nucl -parse_seqids' % (tgfn, wkdir, tgn), return_out_err=True, debug=False)
-    _ = simplerun('blastn%s -db %s/%s -query %s -out %s -outfmt \"7 std qseq sseq btop\"' % (' -task blastn-short' if short else '', wkdir, tgn, qrfn, ofn), shell=True, return_out_err=True, debug=False)  # i'm just copying the format from somewhere else, there's probably a better one
-    best_matches = collections.OrderedDict()
-    if debug > 1:
-        print '             % id     len    n gaps    target            query'
+    if diamond:
+        assert False  # didn't end up implementing this since it turned out blastn does the same thing, and seemed fast enough for now (binary is still in bin/ though, and it should be easy) (note: could also use https://github.com/soedinglab/mmseqs2)
+        dbcmd = './bin/diamond makedb --in reference.fasta -d reference'
+    else:
+        dbcmd = 'makeblastdb -in %s -out %s/%s -dbtype %s -parse_seqids' % (tgfn, wkdir, tgn, 'prot' if aa else 'nucl')
+    _ = simplerun(dbcmd, return_out_err=True, debug=debug)
+    shstr = (' -task blast%s-short'%('p' if aa else 'n')) if short else ''
+    _ = simplerun('blast%s%s%s -db %s/%s -query %s -out %s -outfmt \"7 std qseq sseq btop\"' % ('p' if aa else 'n', shstr, '' if aa else ' -strand plus', wkdir, tgn, qrfn, ofn), shell=True, return_out_err=True, debug=debug)  # i'm just copying the format from somewhere else, there's probably a better one
+    matchfos = collections.OrderedDict()
+    if debug:
+        max_qlen, max_tlen = [max(len(s['name']) for s in sfos) for sfos in [queryfos, targetfos]]
+        max_tlen = max([max_tlen, len('(for first target)')])
+        print '             %% id  mism. len    n gaps    %s            %s   target match seq' % (wfmt('target', max_tlen, jfmt='-'), wfmt('query', max_qlen, jfmt='-'))
+    fieldnames = ['query', 'subject', '% identity', 'alignment length', 'mismatches', 'gap opens', 'q. start', 'q. end', 's. start', 's. end']
     with open(ofn) as ofile:
-        reader = csv.DictReader(filter(lambda row: row[0]!='#', ofile), delimiter='\t', fieldnames=['query', 'subject', '% identity', 'alignment length', 'mismatches', 'gap opens', 'q. start', 'q. end', 's. start', 's. end'])
+        reader = csv.DictReader(filter(lambda row: row[0]!='#', ofile), delimiter='\t', fieldnames=fieldnames)
         for line in reader:
-            pct_id, alen, n_gaps = float(line['% identity']), int(line['alignment length']), int(line['gap opens'])
+            qry, tgt, pct_id, alen, n_gaps = line['query'], line['subject'], float(line['% identity']), int(line['alignment length']), int(line['gap opens'])
+            qbounds, tbounds = [[int(line['%s. start'%s]) - 1, int(line['%s. end'%s])] for s in ['q', 's']]
+            if any(b[0] > b[1] for b in [qbounds, tbounds]):
+                raise Exception('start bound larger than end bound: %s' % (list(b for b in [qbounds, tbounds] if b[0] > b[1])))
+            def gseq(sq, bnd, obd, osq):
+                return (obd[0] - bnd[0]) * gap_chars[0] + bnd[0] * gap_chars[0] + sq[bnd[0] : bnd[1]] + (len(sq) - bnd[1]) * gap_chars[0] + ((len(osq) - obd[1]) - (len(sq) - bnd[1])) * gap_chars[0]
+            qseq = gseq(qdict[qry], qbounds, tbounds, tdict[tgt])
+            tseq = gseq(tdict[tgt], tbounds, qbounds, qdict[qry])
+            mfo = {'query' : qry, 'targets' : tgt, 'pct_ids' : pct_id, 'mismatches' : line['mismatches'], 'alens' : alen, 'n_gaps' : n_gaps, 'qbounds' : qbounds, 'tbounds' : tbounds, 'qseqs' : qseq, 'tseqs' : tseq}
             is_best = False
-            if line['query'] not in best_matches:  # it always puts the best match first, and i guess that could change but seems really unlikely
-                best_matches[line['query']] = {'query' : line['query'], 'target' : line['subject'], 'pct_id' : pct_id, 'alen' : alen, 'n_gaps' : n_gaps}
+            if qry not in matchfos:  # it always puts the best match first, and i guess that could change but seems really unlikely
+                matchfos[qry] = {k : v if k=='query' else [v] for k, v in mfo.items()}
                 is_best = True
-                # if debug > 1:
-                #     print ''
-            if debug > 1 and is_best: # or debug > 1:
-                # gstr = color_gene(line['subject'], allow_constant=True, width=12) if   # doesn't work for leaders atm
-                print '              %3.0f     %3d    %s      %12s      %-s' % (pct_id, alen, color(None if n_gaps==0 else 'red', '%d'%n_gaps, width=3), line['subject'], line['query'] if is_best else '')
+                if debug and print_all_matches:
+                    print ''
+            else:
+                for key, val in mfo.items():
+                    if key == 'query':
+                        continue
+                    matchfos[qry][key].append(val)
+            if debug and (is_best or print_all_matches):
+                if n_gaps == 0:
+                    tgstr = color_mutants(qseq, tseq, amino_acid=aa)
+                else:
+                    tgstr = '  %s  ' % color('blue', 'GAPS')
+                if is_best:
+                    print '          %3s %3s  %3s   %3s    %s      %s      %s   %s' % (color('blue', '-->'), '', '', '', 3 * ' ', wfmt('(for first target)', max_tlen), wfmt(line['query'], max_qlen), qseq)
+                print '          %3s %3.0f  %3d   %3d    %s      %s      %-s   %s' % ('', pct_id, int(line['mismatches']), alen, color(None if n_gaps==0 else 'red', '%d'%n_gaps, width=3), wfmt(tgt, max_tlen), max_qlen * ' ', tgstr)
 
+    if len(matchfos) == 0:
+        print '      no blast matches'
     mstats = {}  # ends up as a sorted list of pairs <target name, list of matched seqfos>
-    def kfn(q): return q['target']
-    for tgt, tgroup in itertools.groupby(sorted(best_matches.values(), key=kfn), key=kfn):
+    def kfn(q): return q['targets'][0]
+    for tgt, tgroup in itertools.groupby(sorted(matchfos.values(), key=kfn), key=kfn):
         mstats[tgt] = list(tgroup)
     mstats = sorted(mstats.items(), key=lambda x: len(x[1]), reverse=True)
 
-    dbfns = ['%s/%s.%s'%(wkdir, tgn, s) for s in 'nhr', 'nin', 'nog', 'nsd', 'nsi', 'nsq']
+    dbfns = ['%s/%s.%s%s'%(wkdir, tgn, 'p' if aa else 'n', s) for s in 'hr', 'in', 'og', 'sd', 'si', 'sq']
     for fn in [tgfn, qrfn, ofn] + dbfns:
         os.remove(fn)
     os.rmdir(wkdir)
 
-    return best_matches, mstats
+    return matchfos, mstats
 
 # ----------------------------------------------------------------------------------------
 def print_cons_seq_dbg(seqfos, cons_seq, aa=False, align=False, tie_resolver_seq=None, tie_resolver_label=None, extra_str='  ', dont_print_cons_seq=False):
@@ -2169,8 +2222,11 @@ def cons_seq(aligned_seqfos=None, unaligned_seqfos=None, aa=False, codon_len=1, 
     if aa_ref_seq is not None:
         assert codon_len == 3 and not aa
         if 3 * len(aa_ref_seq) != len(pad_nuc_seq(seqfos[0]['seq'])):
-            print '\n'.join(s['seq'] for s in seqfos)  # TODO this probably means we're using input seqs for a family with lots of *different* indels, which needs to be fixed/avoided
-            raise Exception('aa ref seq length doesn\'t correspond to padded nuc seq:\n    %s\n    %s' % ('  '.join(aa_ref_seq), pad_nuc_seq(seqfos[0]['seq'])))
+            # print '\n'.join(s['seq'] for s in seqfos)  # TODO this probably means we're using input seqs for a family with lots of *different* indels, which needs to be fixed/avoided
+            # raise Exception('aa ref seq length doesn\'t correspond to padded nuc seq:\n    %s\n    %s' % ('  '.join(aa_ref_seq), pad_nuc_seq(seqfos[0]['seq'])))
+            print '%s aa ref seq length doesn\'t correspond to padded nuc seq, so turning off aa_ref_seq (this may mean that this family has lots of different indels, which isn\'t really properly handled):\n    %s\n    %s' % (color('red', 'error'), '  '.join(aa_ref_seq), pad_nuc_seq(seqfos[0]['seq']))
+            aa_ref_seq = None
+
     if debug:
         print '%staking consensus of %d seqs with len %d in chunks of len %d' % (extra_str, len(seqfos), seq_len, codon_len)
         dbgfo = []
@@ -2393,7 +2449,7 @@ def color_mutants(ref_seq, seq, print_result=False, extra_str='', ref_label='', 
         tmp_gaps = gap_chars
 
     return_str, isnps = [], []
-    for inuke in range(len(seq)):  # would be nice to integrate this with hamming_distance()
+    for inuke in range(len(seq)):  # would be nice to integrate this with hamming_distance() (especially the isnp stuff)
         rchar = ref_seq[inuke]
         char = seq[inuke]
         if char in tmp_ambigs or rchar in tmp_ambigs:
@@ -3248,9 +3304,10 @@ def print_true_events(glfo, reco_info, inf_line, print_naive_seqs=False, full_tr
             missing_str = '   %s %d/%d sequences from actual true cluster%s' % (color('red', 'missing'), len(missing_uids), len(full_true_cluster), ' (but includes %d duplicates not shown below)'%n_dups if n_dups>0 else '')
 
         multiline = synthesize_multi_seq_line_from_reco_info(tpl_ids, reco_info)
+        ixstr = extra_str
         if inf_line['fv_insertion'] != '' and multiline['fv_insertion'] == '':
-            extra_str = ' '*len(inf_line['fv_insertion']) + extra_str  # aligns true + inferred vertically
-        print_reco_event(multiline, extra_str=extra_str, label=color('green', 'true:') + multiple_str + missing_str)
+            ixstr = ' '*len(inf_line['fv_insertion']) + ixstr  # aligns true + inferred vertically
+        print_reco_event(multiline, extra_str=ixstr, label=color('green', 'true:') + multiple_str + missing_str)
         if print_naive_seqs:
             true_naive_seqs.append(multiline['naive_seq'])
 
@@ -3270,7 +3327,7 @@ def get_uid_extra_strs(line, extra_print_keys, uid_extra_strs, uid_extra_str_lab
     if uid_extra_str_label is None:
         uid_extra_str_label = ''
     for ekey in extra_print_keys:
-        vlist = [antnval(line, ekey, i, use_default=True, default_val=color('blue', '-')) for i in range(len(line['unique_ids']))]
+        vlist = [antnval(line, ekey, i, use_default=True, default_val=color('blue', '-'), add_xtr_col=True) for i in range(len(line['unique_ids']))]
         # tw = str(max(len(ekey), max(len(vstr(v)) for v in vlist)))  # maybe include len of ekey in width?
         tw = max([len(vstr(v)) for v in vlist] + [len(ekey)])
         uid_extra_str_label += '  ' + wfmt(ekey, tw, jfmt='-')
@@ -3736,26 +3793,50 @@ def lev_dist(s1, s2, aa=False):  # NOTE does *not* handle ambiguous characters c
     return sys.modules['Levenshtein'].distance(s1, s2)
 
 # ----------------------------------------------------------------------------------------
-# return list of families in <antn_pairs> sorted by their nearness to <refpair> by either 'lev' (levenshtein) or 'ham' (hamming) distance between naive sequences (automatically skips <refpair> if it's in <antn_pairs>)
-# NOTE it would be nice to use vsearch for this, but it doesn't have an amino acid option (there's an issue they've had open to add it since like 6 years)
-def non_clonal_clusters(refpair, antn_pairs, dtype='lev', aa=False, max_print_dist=16, max_n_print=5, extra_str='', labelstr='', debug=True):
+# return list of families in <antn_pairs> sorted by their nearness to <refpair> by 'lev' (levenshtein), 'ham' (hamming) distance, or blast mismathces between naive sequences (automatically skips <refpair> if it's in <antn_pairs>)
+# For single chain just set that chain's entry in <refpair> and <antn_pairs> to None
+def non_clonal_clusters(refpair, antn_pairs, dtype='lev', aa=False, workdir=None, max_print_dist=16, max_n_print=5, extra_str='', labelstr='', debug=True):
     # ----------------------------------------------------------------------------------------
     def nseq(atn_pair):
         tkey = 'naive_seq'
         if aa:
             tkey += '_aa'
-            for tl in atn_pair:
+            for tl in [l for l in atn_pair if l is not None]:
                 add_naive_seq_aa(tl)
-        return ''.join(l[tkey] for l in atn_pair) #atn_pair[0][tkey] + atn_pair[1][tkey]
+        return ''.join(l[tkey] for l in atn_pair if l is not None)
     # ----------------------------------------------------------------------------------------
-    assert dtype in ['lev', 'ham']
-    dfcn = lev_dist if dtype == 'lev' else hamming_distance
+    def gids(atn):
+        if atn is None:
+            return []
+        return atn['unique_ids']
+    # ----------------------------------------------------------------------------------------
+    start = time.time()
+    assert dtype in ['lev', 'ham', 'blast']
+    if None in refpair:  # assume original value is for both chains together
+        max_n_print /= 2
     distances = []
     for iclust, atn_pair in enumerate(antn_pairs):
-        if [l['unique_ids'] for l in atn_pair] == [l['unique_ids'] for l in refpair]:
+        if [l['unique_ids'] for l in atn_pair if l is not None] == [l['unique_ids'] for l in refpair if l is not None]:
             continue
         h_atn, l_atn = atn_pair
-        distances.append({'i' : iclust, 'h_ids' : h_atn['unique_ids'], 'l_ids' : l_atn['unique_ids'], 'dist' : dfcn(nseq(atn_pair), nseq(refpair))})
+        distances.append({'i' : iclust, 'h_ids' : gids(h_atn), 'l_ids' : gids(l_atn)})
+        if dtype in ['lev', 'ham']:
+            distances[-1]['dist'] = (lev_dist if dtype=='lev' else hamming_distance)(nseq(atn_pair), nseq(refpair))
+        else:
+            distances[-1]['seq'] = nseq(atn_pair)
+
+    if dtype in ['blast']:
+        qfos = [{'name' : 'query', 'seq' : nseq(refpair)}]
+        tfos = [{'name' : 'iclust-%d'%dfo['i'], 'seq' : dfo['seq']} for dfo in distances]
+        if workdir is None:
+            workdir = choose_random_subdir('/tmp/%s/non-clonal-clusters'%os.getenv('USER', default='partis-work'))
+        matchfos, mstats = run_blastn(qfos, tfos, workdir, aa=aa) #, debug=True, print_all_matches=True)
+        mfo = matchfos['query']
+        min_len = int(0.9 * max(mfo['alens']))  # require that the matches are at least 90% as long as the longest match (yes, ick)
+        matchdict = {mfo['targets'][i] : int(mfo['mismatches'][i]) for i in range(len(mfo['targets'])) if mfo['alens'][i] > min_len}
+        for dfo in distances:
+            dfo['dist'] = matchdict.get('iclust-%d'%dfo['i'], 999999)
+
     if len(distances) == 0:
         return []
     sdists = sorted(distances, key=lambda d: d['dist'])
@@ -3766,7 +3847,7 @@ def non_clonal_clusters(refpair, antn_pairs, dtype='lev', aa=False, max_print_di
             labelstr = ' %s ' % labelstr
         print '%s%snearest: %d edit%s (%d cluster%s less than %d)' % (extra_str, labelstr, nearest['dist'], plural(nearest['dist']), len(near_dfos), plural(len(near_dfos)), max_print_dist)
         if len(near_dfos) > 0:
-            print '    %s%s-dist  iclust   N uids (h l)' % (extra_str, dtype)
+            print '    %s%s-dist  iclust   N uids (%s)' % (extra_str, dtype, ('%s only'%('h' if refpair[1] is None else 'l')) if None in refpair else 'h l')
             for dfo in near_dfos[:max_n_print]:
                 # assert len(dfo['h_ids']) == len(dfo['l_ids'])
                 print '   %s   %3d     %3d     %3d %3d    %s' % (extra_str, dfo['dist'], dfo['i'], len(dfo['h_ids']), len(dfo['l_ids']), color_mutants(nseq(refpair), nseq(antn_pairs[dfo['i']]), amino_acid=aa, align_if_necessary=True))
@@ -3774,6 +3855,8 @@ def non_clonal_clusters(refpair, antn_pairs, dtype='lev', aa=False, max_print_di
                 print '                  (only printing nearest %d)' % max_n_print
             print ''
 
+    if debug:
+        print '      non-clonal cluster time: %.1f' % (time.time() - start)
     return sdists
 
 # ----------------------------------------------------------------------------------------
@@ -4157,9 +4240,13 @@ def trim_nuc_seq(nseq):  # if length not multiple of three, trim extras from the
 
 # ----------------------------------------------------------------------------------------
 def add_extra_column(key, info, outfo, glfo=None, definitely_add_all_columns_for_csv=False):
+    if outfo is None:  # hacking on this behavior that doesn't require you to pass in <outfo>
+        outfo = {}
     # NOTE use <info> to calculate all quantities, *then* put them in <outfo>: <outfo> only has the stuff that'll get written to the file, so can be missing things that are needed for calculations
     if key == 'cdr3_seqs':
         outfo[key] = [get_cdr3_seq(info, iseq) for iseq in range(len(info['unique_ids']))]
+    if key == 'cdr3_seqs_aa':
+        outfo[key] = [ltranslate(get_cdr3_seq(info, iseq)) for iseq in range(len(info['unique_ids']))]
     elif key == 'full_coding_naive_seq':
         if glfo is None:
             raise Exception('have to pass in glfo for extra annotation column \'%s\'' % key)
@@ -4171,7 +4258,8 @@ def add_extra_column(key, info, outfo, glfo=None, definitely_add_all_columns_for
         # print outfo['unique_ids']
         # color_mutants(info['naive_seq'], outfo[key], print_result=True, align=True, extra_str='  ')
     elif key == 'full_coding_input_seqs':
-        full_coding_input_seqs = [info['v_5p_del'] * ambig_base + info['input_seqs'][iseq] + info['j_3p_del'] * ambig_base for iseq in range(len(info['unique_ids']))]
+        def inpseq(i): return info['input_seqs'][iseq][len(info['fv_insertion']) : len(info['input_seqs'][iseq]) - len(info['jf_insertion'])]
+        full_coding_input_seqs = [info['v_5p_del'] * ambig_base + inpseq(iseq) + info['j_3p_del'] * ambig_base for iseq in range(len(info['unique_ids']))]
         outfo[key] = full_coding_input_seqs
         # for iseq in range(len(info['unique_ids'])):
         #     print info['unique_ids'][iseq]
@@ -4206,6 +4294,7 @@ def add_extra_column(key, info, outfo, glfo=None, definitely_add_all_columns_for
         # raise Exception('column \'%s\' missing from annotation' % key)
         # print '    %s column \'%s\' missing from annotation' % (wrnstr(), key)
         pass
+    return outfo.get(key)
 
 # ----------------------------------------------------------------------------------------
 def transfer_indel_reversed_seqs(line):
@@ -5254,14 +5343,18 @@ def get_deduplicated_partitions(partitions, antn_list=None, glfo=None, debug=Fal
     return new_partitions
 
 # ----------------------------------------------------------------------------------------
+def build_dummy_reco_info(true_partition):
+    def tkey(c): return ':'.join(c)
+    chashes = {tkey(tc) : hash(tkey(tc)) for tc in true_partition}
+    return {u : {'reco_id' : chashes[tkey(tc)]} for tc in true_partition for u in tc}
+
+# ----------------------------------------------------------------------------------------
 def per_seq_correct_cluster_fractions(partition, true_partition, reco_info=None, seed_unique_id=None, dbg_str='', inf_label='inferred', true_label='true', debug=False):
     if seed_unique_id is None:
         check_intersection_and_complement(partition, true_partition, a_label=inf_label, b_label=true_label)
     if reco_info is None:  # build a dummy reco_info that just has reco ids
-        def tkey(c): return ':'.join(c)
-        chashes = {tkey(tc) : hash(tkey(tc)) for tc in true_partition}
-        reco_info = {u : {'reco_id' : chashes[tkey(tc)]} for tc in true_partition for u in tc}
-    reco_ids = {uid : reco_info[uid]['reco_id'] for cluster in partition for uid in cluster}  # speed optimization
+        reco_info = build_dummy_reco_info(true_partition)
+    reco_ids = {uid : reco_info[uid]['reco_id'] for cluster in partition for uid in cluster}  # NOTE this iterates over the *inferred* partition, which maybe is important if seed id is set? (i don't remember atm)
     uids = set([uid for cluster in partition for uid in cluster])
     clids = get_cluster_ids(uids, partition)  # map of {uid : (index of cluster in <partition> in which that uid occurs)} (well, list of indices, in case there's duplicates)
 
@@ -5275,11 +5368,7 @@ def per_seq_correct_cluster_fractions(partition, true_partition, reco_info=None,
 
     def get_fraction_present(inferred_cluster, true_cluster):
         """ Return the fraction of the true clonemates in <true_cluster> that appear in <inferred_cluster>. """
-        n_present = 0
-        for tmpid in true_cluster:  # NOTE this includes the case where tmpid equal to uid
-            if tmpid in inferred_cluster:
-                n_present += 1
-        return float(n_present) / len(true_cluster)
+        return len(set(inferred_cluster) & set(true_cluster)) / float(len(true_cluster))
 
     mean_clonal_fraction, mean_fraction_present = 0., 0.
     n_uids = 0
@@ -5392,39 +5481,48 @@ def partition_similarity_matrix(partition_a, partition_b, n_biggest_clusters, is
             return 0.5 * (len(clust_a) + len(clust_b))  # mean size of the two clusters
         else:
             assert False
-
+    # ----------------------------------------------------------------------------------------
+    def getsclusts(ptn):
+        sort_within_clusters(ptn)  # have to do this before taking N biggest so that when there's lots of ties in size we're more likely to get the same clusters for both methods
+        srtclusts = sorted(sorted(ptn), key=len, reverse=True)
+        plot_clusts = srtclusts[ : n_biggest_clusters]
+        skip_clusts = srtclusts[n_biggest_clusters : ]
+        return plot_clusts, skip_clusts
+    # ----------------------------------------------------------------------------------------
+    def incr_clust(csize, n_common, ifrac):
+        sub_szs.append(csize)
+        sub_ovlps.append(n_common)
+        sub_fracs.append(ifrac)
     # ----------------------------------------------------------------------------------------
     check_intersection_and_complement(partition_a, partition_b, a_label=a_label, b_label=b_label, only_warn=True)
     sort_within_clusters(partition_a)  # have to do this before taking N biggest so that when there's lots of ties in size we're more likely to get the same clusters for both methods
     sort_within_clusters(partition_b)
-    a_clusters = sorted(sorted(partition_a), key=len, reverse=True)[ : n_biggest_clusters]  # i.e. the n biggest clusters (after sorting clusters alphabetically)
-    b_clusters = sorted(sorted(partition_b), key=len, reverse=True)[ : n_biggest_clusters]
+    a_clusters, a_skip_clusts = getsclusts(partition_a)
+    b_clusters, b_skip_clusts = getsclusts(partition_b)
 
     smatrix = [[float('nan') for _ in b_clusters] for _ in a_clusters]
     dszs, dovlps, dfracs = [], [], []
     overlap_matrix = [[set(clust_a) & set(clust_b) for clust_b in b_clusters] for clust_a in a_clusters]
+    missing_b_clusts = list(range(len(b_clusters)))  # need to look for any clusters in b that overlapped only with small a clusters (i.e. won't otherwise show up in the debug printout)
     for ia, clust_a in enumerate(a_clusters):
         sub_szs, sub_ovlps, sub_fracs, n_found = [], [], [], 0
-        for ib, clust_b in enumerate(b_clusters):
-            if len(overlap_matrix[ia][ib]) == 0:
-                continue
+        for ib, clust_b in enumerate(b_clusters):  # first look just in the precalculated overlap matrix
             n_common = len(overlap_matrix[ia][ib])
+            if n_common == 0:
+                continue
             ifrac = float(n_common) / norm_factor(clust_a, clust_b)
             smatrix[ia][ib] = float('nan') if ifrac==0 else ifrac  # nan gives you transparent/empty color
-            if debug and n_common > 0:
+            if debug:
                 n_found += n_common
-                sub_szs.append(len(clust_b))
-                sub_ovlps.append(n_common)
-                sub_fracs.append(ifrac)
-        if debug and n_found < len(clust_a):  # if we didn't find any with overlap, look in smaller clusters
-            sub_szs, sub_ovlps, sub_fracs, n_found = [], [], [], 0
-            for bclst in partition_b:
+                incr_clust(len(clust_b), n_common, ifrac)
+                if ib in missing_b_clusts:
+                    missing_b_clusts.remove(ib)
+        if debug and n_found < len(clust_a):  # if we didn't find any with overlap, look in smaller clusters (I think doing this when debug isn't set would be annoyingly slow. This fcn is meant to plot a summary of the largest clusters on potentially large repertoires, if you want really comprehensive info, just set debug)
+            for bclst in b_skip_clusts:
                 ncm = len(set(clust_a) & set(bclst))
                 if ncm > 0:
                     n_found += ncm
-                    sub_szs.append(len(bclst))
-                    sub_ovlps.append(ncm)
-                    sub_fracs.append(float(ncm) / norm_factor(clust_a, bclst))
+                    incr_clust(len(bclst), ncm, float(ncm) / norm_factor(clust_a, bclst))
                 sub_szs = sorted(sub_szs, reverse=True)
                 sub_ovlps = sorted(sub_ovlps, reverse=True)
             if n_found != len(clust_a):
@@ -5435,12 +5533,18 @@ def partition_similarity_matrix(partition_a, partition_b, n_biggest_clusters, is
             dfracs.append(sub_fracs)
     if debug:
         max_dsz, max_ovl = max(len(s) for s in dszs), max(len(o) for o in dovlps)
+        print '    cluster sizes (%s):' % color('blue', 'used')
+        for tlab, aclusts, eclusts in zip([a_label, b_label], [partition_a, partition_b], [a_clusters, b_clusters]):
+            print '    %12s: %s' % (tlab, cluster_size_str(aclusts, clusters_to_emph=eclusts))
         print '    %s  %s -->' % (a_label, b_label)
-        print '     size    %s        %s      overlap / %s size (*100)' % (wfmt('sizes', 2*max_dsz, jfmt='-'), wfmt('overlaps', 2*max_ovl, jfmt='-'), iscn_denominator.replace('min', 'smaller').replace('max', 'larger'))
+        print '     size   %s    %s      overlap / %s size (*100)' % (wfmt('sizes', 2*max_dsz, jfmt='-'), wfmt('overlaps', 2*max_ovl, jfmt='-'), iscn_denominator.replace('min', 'smaller').replace('max', 'larger'))
         cl = len(str(max(len(a_clusters[0]), len(b_clusters[0]))))
         for ia, clust_a in enumerate(a_clusters):
             szstr, ovlstr = ' '.join('%d'%s for s in dszs[ia]), ' '.join('%d'%o for o in dovlps[ia])
             print ('    %4d      %-s    %-s    %s') % (len(clust_a), wfmt(szstr, 2*max_dsz, jfmt='-'), wfmt(ovlstr, 2*max_ovl, jfmt='-'), ' '.join('%3.0f'%(100*f) for f in dfracs[ia]))
+        if len(missing_b_clusts) > 0:
+            print '  %s %d %s clusters only overlapped with small %s clusters, i.e. won\'t appear in debug output above (if there\'s large clusters here this means you should probably increase the number of clusters):' % (wrnstr(), len(missing_b_clusts), b_label, a_label)
+            print '     %s' % cluster_size_str([b_clusters[i] for i in missing_b_clusts])
 
     a_cluster_lengths, b_cluster_lengths = [len(c) for c in a_clusters], [len(c) for c in b_clusters]  # nice to return these here so you don't have to re-sort in the calling fcn
     return a_cluster_lengths, b_cluster_lengths, smatrix
@@ -6888,10 +6992,9 @@ def get_gene_counts_from_annotations(annotations, only_regions=None):
     return gene_counts
 
 # ----------------------------------------------------------------------------------------
-def parse_constant_regions(species, locus, annotation_list, workdir, debug=False):
+def parse_constant_regions(species, locus, annotation_list, workdir, aa_dbg=False, csv_outdir=None, debug=False):
     # ----------------------------------------------------------------------------------------
     def algncreg(tkey, n_min_seqs=5):
-        print ' %s: aligning' % color('blue', tkey)
         if tkey == 'leader':  # for leaders, group together seqs that align to each V gene
             all_v_genes = set(l['v_gene'] for l in annotation_list)
             vg_antns = {}
@@ -6900,16 +7003,23 @@ def parse_constant_regions(species, locus, annotation_list, workdir, debug=False
             print '  found %d total V genes' % len(all_v_genes)
         else:  # For c_genes, do everyone at once
             vg_antns = {'IGHVx-x*x' : annotation_list}
-        leader_seq_infos = []  # final/new leader seqs
+        # leader_seq_infos = []  # final/new leader seqs
+        writefos = []
         print '      gene    families  seqs'
         for ivg, (vgene, vgalist) in enumerate(sorted(vg_antns.items(), key=lambda q: sum(len(l['unique_ids']) for l in q[1]), reverse=True)):
             print '    %s %3d     %3d' % (color_gene(vgene, width=10), len(vgalist), sum(len(l['unique_ids']) for l in vgalist))
             if ivg > 2 and sum(len(l['unique_ids']) for l in vgalist) < n_min_seqs:  # always do the first 3 v gene groups, but past that skip any vgene groups that have too few sequences
                 print '            too few seqs'
                 continue
-            qfos = [{'name' : u, 'seq' : s} for l in vgalist for u, s in zip(l['unique_ids'], l['%s_seqs'%tkey])]  # it might be easier to do each annotation separately, but this way i can control parallelization better and there's less overhead
-            best_matches, mstats = run_blastn(qfos, tgtfos[tkey], workdir, debug=debug)  # , short=True
-            if len(best_matches) == 0:
+            n_zero_len = len([s for l in vgalist for s in l['%s_seqs'%tkey] if len(s) == 0])
+            if n_zero_len > 0:
+                print '    ignoring %d seqs with zero length %ss' % (n_zero_len, tkey)
+            qfos = [{'name' : u, 'seq' : s} for l in vgalist for u, s in zip(l['unique_ids'], l['%s_seqs'%tkey]) if len(s) > 0]  # it might be easier to do each annotation separately, but this way i can control parallelization better and there's less overhead
+            if len(qfos) == 0:
+                print '    no query infos'
+                return
+            matchfos, mstats = run_blastn(qfos, tgtfos[tkey], workdir, debug=debug) #, print_all_matches=True)  # , short=True
+            if len(matchfos) == 0:
                 print '    %s no %s matches from %d targets' % (wrnstr(), tkey, len(tgtfos[tkey]))
             qdict, tdict = [{s['name'] : s['seq'] for s in sfos} for sfos in [qfos, tgtfos[tkey]]]  # should really check for duplicates
             for itg, (tgt, mfos) in enumerate(mstats):  # loop over each target seq and the sequences for whom it was a best match
@@ -6918,28 +7028,39 @@ def parse_constant_regions(species, locus, annotation_list, workdir, debug=False
                     print '          too small, skipping'
                     continue
                 tmsfos = [{'name' : tgt, 'seq' : tdict[tgt]}] + [{'name' : m['query'], 'seq' : qdict[m['query']]} for m in mfos]
-                msa_seqfos = align_many_seqs(tmsfos, extra_str='            ', debug=False)  # this really, really sucks to re-align, but it's only for debug and otherwise I'd have to write a parser for the stupid blast alignment output
+                msa_seqfos = align_many_seqs(tmsfos, no_gaps=True, extra_str='            ', debug=False)  # this really, really sucks to re-align, but it's only for debug and otherwise I'd have to write a parser for the stupid blast alignment output UPDATE well now i'm parsing the blast alignment a little more (although still not the gaps, whose locations may not be there?) so maybe coule remove this now
                 cseq = cons_seq(aligned_seqfos=[s for s in msa_seqfos if s['name']!=tgt], extra_str='         ', debug=debug)
-                leader_seq_infos.append({'seq' : cseq, 'match-name' : tgt})
+                # leader_seq_infos.append({'seq' : cseq, 'match-name' : tgt})
+                writefos += [{'name' : s['name'], 'seq' : s['seq'], 'target' : tgt} for s in msa_seqfos + [{'name' : 'consensus-%s'%tgt, 'seq' : cseq, 'target' : tgt}]]
                 if debug:
                     print color_mutants(cseq, get_single_entry([s for s in msa_seqfos if s['name']==tgt])['seq'], seq_label='target: ', post_str=' %s'%tgt, extra_str='              ')  # can't put the target in the cons seq calculation, so have to print separately
-                    aasfos = [{'name' : s['name'], 'seq' : ltranslate(pad_nuc_seq(s['seq'].replace('-', ambig_base), side='left' if tkey=='leader' else 'right'))} for s in msa_seqfos]  # pad on left, since we assume the last three bases of 'leader_seqs' are in frame w/respect to V
-                    aa_msa_seqfos = align_many_seqs(aasfos, extra_str='            ', aa=True, debug=False)
-                    aa_cseq = cons_seq(aligned_seqfos=[s for s in aa_msa_seqfos if s['name']!=tgt], aa=True, extra_str='         ', debug=debug)
-                    print color_mutants(aa_cseq, get_single_entry([s for s in aa_msa_seqfos if s['name']==tgt])['seq'], amino_acid=True, seq_label='target: ', post_str=' %s'%tgt, extra_str='              ')  # can't put the target in the cons seq calculation, so have to print separately
+                    if aa_dbg:
+                        aasfos = [{'name' : s['name'], 'seq' : ltranslate(pad_nuc_seq(s['seq'].replace('-', ambig_base), side='left' if tkey=='leader' else 'right'))} for s in msa_seqfos]  # pad on left, since we assume the last three bases of 'leader_seqs' are in frame w/respect to V
+                        aa_msa_seqfos = align_many_seqs(aasfos, no_gaps=True, extra_str='            ', aa=True, debug=False)
+                        aa_cseq = cons_seq(aligned_seqfos=[s for s in aa_msa_seqfos if s['name']!=tgt], aa=True, extra_str='         ', debug=debug)
+                        print color_mutants(aa_cseq, get_single_entry([s for s in aa_msa_seqfos if s['name']==tgt])['seq'], amino_acid=True, seq_label='target: ', post_str=' %s'%tgt, extra_str='              ')  # can't put the target in the cons seq calculation, so have to print separately
+        if csv_outdir is not None and len(writefos) > 0:
+            cfn = '%s/%s-seq-alignments.csv'%(csv_outdir, tkey)
+            print '      writing to %s' % cfn
+            with open(cfn, 'w') as cfile:
+                writer = csv.DictWriter(cfile, fieldnames=writefos[0].keys())
+                writer.writeheader()
+                for wfo in writefos:
+                    writer.writerow(wfo)
     # ----------------------------------------------------------------------------------------
-    def read_seqs(tkey, fname, debug=False):
-        if debug:
+    def read_seqs(tkey, fname, tdbg=False):
+        if tdbg:
             print '    reading %s seqs from %s' % (tkey, fname)
         tfos = read_fastx(fname)
         for tfo in tfos:
-            tfo['name'] = glutils.get_imgt_info(tfo['infostrs'], 'gene')
+            if len(tfo['infostrs']) > 1:
+                tfo['name'] = glutils.get_imgt_info(tfo['infostrs'], 'gene')
         for tk in ['name', 'seq']:  # eh, duplicate seqs are ok i think
             all_vals = [t[tk] for t in tfos]
             if any(all_vals.count(v) > 1 for v in set(all_vals)):
                 dupfo = sorted([(v, all_vals.count(v)) for v in sorted(set(all_vals)) if all_vals.count(v) > 1], key=operator.itemgetter(1), reverse=True)
                 print '    %s %d %s %ss appear more than once (%d total occurences) in %s' % (wrnstr(), len(dupfo), tkey, tk, sum(n for _, n in dupfo), fname)
-                if debug:
+                if tdbg:
                     print '      %s' % '\n      '.join('%3d  %s'%(n, v) for v, n in dupfo)
                 if tk == 'name':
                     tkvals, new_tfos = [], []
@@ -6952,12 +7073,10 @@ def parse_constant_regions(species, locus, annotation_list, workdir, debug=False
                     tfos = new_tfos
         return tfos
     # ----------------------------------------------------------------------------------------
-    def read_leaders():
-        return read_fastx(leaderfn)
-    # ----------------------------------------------------------------------------------------
     lsrc = 'imgt'
     leaderfn, cgfn = 'data/germlines/leaders/%s/%s/%s/%sv.fa' % (lsrc, species, locus, locus), 'data/germlines/constant/%s/%sc.fa'%(species, locus)
     tgtfos = collections.OrderedDict()
     for tkey, fn in zip(['leader', 'c_gene'], [leaderfn, cgfn]):
+        print ' %s seqs' % color('blue', tkey)
         tgtfos[tkey] = read_seqs(tkey, fn)
         algncreg(tkey)

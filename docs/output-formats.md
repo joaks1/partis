@@ -35,8 +35,8 @@ The yaml output file contains four top-level headers:
 |----------------|----------------------------------------------------------------------------
 |  version-info  |  output file format version
 |  germline-info |  germline sequence, names, and conserved codon positions
-|  events        |  list of annotations for each rearrangement event (i.e. group of clonally-related sequences)
-|  partitions    |  list of partitions, including the most likely partition (only set if running the partition action)
+|  events        |  list of annotations for each rearrangement event (i.e. group of clonally-related sequences). Can have multiple annotations for an event, and can have annotations for events not in the best partition, i.e. do not "guess" the partition based on the events here.
+|  partitions    |  list of partitions and their associated log probabilities. The most likely partition has the highest logprob.
 
 #### extracting simplified files
 
@@ -47,6 +47,16 @@ For example
 ```
 will write input sequences, together with inferred naive sequences and cdr3 lengths, to `tmp.csv` or `tmp.fa`.
 See `./bin/parse-output.py --help` for details.
+
+The ClusterPath class, which represents a series of partitions, is useful for handling partitions.
+This snippet reads a cluster path from a file, prints an ascii summary, and gets the best partitions:
+
+```
+from clusterpath import ClusterPath
+_, _, cpath = utils.read_output('test/ref-results/partition-new-simu.yaml')
+cpath.print_partitions()
+best_ptn = cpath.best()  # return best partition
+```
 
 #### description of keys
 
@@ -62,7 +72,7 @@ The following keys are written to output by default:
 | v_gene         |  V gene in most likely annotation
 | d_gene         |  see v_gene
 | j_gene         |  see v_gene
-| cdr3_length    |  CDR3 length of most likely annotation (IMGT numbering, but __including__ both conserved codons in their entirety)
+| cdr3_length    |  nucleotide CDR3 length of most likely annotation, but note that this __includes__ both conserved codons in their entirety, i.e. is what IMGT calls the ["junction length"](https://docs.airr-community.org/en/stable/datarep/rearrangements.html#junction-versus-cdr3)
 | mut_freqs      |  list of sequence mutation frequencies `[per-seq]`
 | input_seqs     |  list of input sequences (with constant regions (fv/jf insertions) removed, unless `--dont-remove-framework-insertions` was set) `[per-seq]`
 | naive_seq      |  naive (unmutated ancestor) sequence corresponding to most likely annotation
